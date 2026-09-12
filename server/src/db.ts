@@ -166,6 +166,35 @@ CREATE TABLE IF NOT EXISTS post_events (
   archived_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS allergy_guests (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  guest_name TEXT NOT NULL,
+  table_no TEXT NOT NULL,
+  allergens TEXT NOT NULL DEFAULT '',
+  substitute_dish TEXT NOT NULL DEFAULT '',
+  zone TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'submitted',
+  created_by INT,
+  created_by_name TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS allergy_events (
+  id SERIAL PRIMARY KEY,
+  project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+  allergy_id INT REFERENCES allergy_guests(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  detail TEXT DEFAULT '',
+  from_table TEXT DEFAULT '',
+  to_table TEXT DEFAULT '',
+  client_note TEXT DEFAULT '',
+  created_by INT,
+  created_by_name TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id SERIAL PRIMARY KEY,
   project_id INT,
@@ -179,6 +208,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_projects_date ON projects(wedding_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_role ON tasks(role, status);
 CREATE INDEX IF NOT EXISTS idx_changes_project ON changes(project_id);
+CREATE INDEX IF NOT EXISTS idx_allergy_project ON allergy_guests(project_id);
+
+-- 兼容已有数据卷的增量迁移（幂等）
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS allergy_id INT;
 `;
 
 export async function migrate(): Promise<void> {

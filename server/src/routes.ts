@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response, Router } from 'express';
+import { addAllergyEvent, confirmAllergy, lookupZone } from './allergy';
 import { AuthedRequest, authRequired, requireRole, signToken, verifyPassword } from './auth';
 import { logAudit, q } from './db';
 import { buildImpact } from './impacts';
@@ -220,7 +221,7 @@ router.get('/projects/:id', authRequired, ah(async (req, res) => {
   if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const p = (await q('SELECT * FROM projects WHERE id=$1', [pid])).rows[0];
   if (!p) return res.status(404).json({ error: '项目不存在' });
-  const [hall, menu, layout, prep, payments, changes, tasks, versions, postEvent, audits, sales, planner] = await Promise.all([
+  const [hall, menu, layout, prep, payments, changes, tasks, versions, postEvent, audits, sales, planner, allergies] = await Promise.all([
     p.hall_id ? q('SELECT * FROM halls WHERE id=$1', [p.hall_id]) : { rows: [null] },
     p.menu_id ? q('SELECT * FROM menus WHERE id=$1', [p.menu_id]) : { rows: [null] },
     q('SELECT * FROM layout_items WHERE project_id=$1 ORDER BY id', [pid]),
@@ -233,6 +234,7 @@ router.get('/projects/:id', authRequired, ah(async (req, res) => {
     q('SELECT * FROM audit_logs WHERE project_id=$1 ORDER BY id DESC LIMIT 50', [pid]),
     p.sales_id ? q('SELECT id,name FROM users WHERE id=$1', [p.sales_id]) : { rows: [null] },
     p.planner_id ? q('SELECT id,name FROM users WHERE id=$1', [p.planner_id]) : { rows: [null] },
+    q('SELECT * FROM allergy_guests WHERE project_id=$1 ORDER BY id', [pid]),
   ]);
   const settlement = computeSettlement(p, menu.rows[0], changes.rows, payments.rows, postEvent.rows[0] || null);
   res.json({
@@ -249,6 +251,7 @@ router.get('/projects/:id', authRequired, ah(async (req, res) => {
     audits: audits.rows,
     sales: sales.rows[0],
     planner: planner.rows[0],
+    allergies: allergies.rows,
     settlement,
   });
 }));
@@ -439,6 +442,10 @@ router.patch('/tasks/:id', authRequired, ah(async (req: AuthedRequest, res) => {
       await logAudit(t.project_id, req.user!, '变更自动结案', '全部岗位任务已完成');
     }
   }
+  // 厨房完成过敏餐备餐任务 → 自动确认过敏餐并生成服务员桌边提醒
+  if (status === 'done' && t.allergy_id && t.role === 'kitchen') {
+    await confirmAllergy(t.allergy_id, req.user!);
+  }
   res.json({ ok: true });
 }));
 
@@ -526,5 +533,142 @@ router.post('/projects/:id/archive', authRequired, requireRole('manager'), ah(as
   );
   await q("UPDATE projects SET status='archived', updated_at=now() WHERE id=$1", [pid]);
   await logAudit(pid, req.user!, '项目归档', `实际 ${b.actual_tables ?? p.planned_tables} 桌，优惠 ¥${Number(b.discount) || 0}，投诉 ${complaints.length} 条`);
+  res.json({ ok: true });
+}));
+
+// ---------- 宾客过敏餐跟踪 ----------
+// 名单与事件查询
+router.get('/projects/:id/allergies', authRequired, ah(async (req, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
+  const [guests, events] = await Promise.all([
+    q('SELECT * FROM allergy_guests WHERE project_id=$1 ORDER BY id', [pid]),
+    q('SELECT * FROM allergy_events WHERE project_id=$1 ORDER BY id DESC LIMIT 100', [pid]),
+  ]);
+  res.json({ guests: guests.rows, events: events.rows });
+}));
+
+// 新人提交过敏宾客名单（销售/策划/经理录入）→ 同步厨房备餐任务
+router.post('/projects/:id/allergies', authRequired, requireRole('sales', 'planner', 'manager'), ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
+  const { guest_name, table_no, allergens, substitute_dish } = req.body || {};
+  if (!guest_name?.trim() || !table_no?.trim() || !allergens?.trim()) {
+    return res.status(400).json({ error: '宾客姓名、桌号、禁忌食材为必填项' });
+  }
+  const zone = await lookupZone(pid, table_no.trim());
+  const r = await q(
+    `INSERT INTO allergy_guests(project_id, guest_name, table_no, allergens, substitute_dish, zone, status, created_by, created_by_name)
+     VALUES($1,$2,$3,$4,$5,$6,'submitted',$7,$8) RETURNING id`,
+    [pid, guest_name.trim(), table_no.trim(), allergens.trim(), (substitute_dish || '').trim(), zone, req.user!.id, req.user!.name],
+  );
+  const gid = r.rows[0].id;
+  // 同步厨房：备餐确认任务（姓名/桌号/禁忌/替代菜品）
+  await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+    pid, gid, 'kitchen',
+    `过敏餐备餐确认：${table_no.trim()}桌 ${guest_name.trim()}`,
+    `宾客 ${guest_name.trim()}（${table_no.trim()}桌${zone ? ' · ' + zone + '区' : ''}）禁忌「${allergens.trim()}」，替代菜品「${(substitute_dish || '').trim() || '待定'}」。请确认可单独备制并回执。`,
+  ]);
+  await addAllergyEvent(pid, gid, 'created',
+    `新人提交过敏宾客：${guest_name.trim()}（${table_no.trim()}桌），禁忌「${allergens.trim()}」，替代菜品「${(substitute_dish || '').trim() || '待定'}」，已同步厨房与服务员线`, { by: req.user! });
+  await logAudit(pid, req.user!, '新增过敏宾客', `${guest_name.trim()}（${table_no.trim()}桌）禁忌 ${allergens.trim()}`);
+  res.status(201).json({ id: gid, zone });
+}));
+
+// 厨房确认 → 生成服务员桌边提醒
+router.post('/allergies/:id/confirm', authRequired, requireRole('kitchen'), ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法 ID' });
+  const g = await confirmAllergy(id, req.user!);
+  if (!g) return res.status(400).json({ error: '记录不存在或已确认' });
+  await logAudit(g.project_id, req.user!, '厨房确认过敏餐', `${g.guest_name}（${g.table_no}桌），已生成服务员桌边提醒`);
+  res.json({ ok: true });
+}));
+
+// 编辑 / 临场换桌：过敏餐提示随宾客移动，同步桌卡、厨房出餐、服务员分区
+router.patch('/allergies/:id', authRequired, requireRole('sales', 'planner', 'manager'), ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法 ID' });
+  const g = (await q('SELECT * FROM allergy_guests WHERE id=$1', [id])).rows[0];
+  if (!g) return res.status(404).json({ error: '过敏宾客记录不存在' });
+  const b = req.body || {};
+  const newTable = (b.table_no ?? g.table_no).trim();
+  const moving = newTable !== g.table_no;
+  const newZone = moving ? await lookupZone(g.project_id, newTable) : g.zone;
+
+  await q(
+    `UPDATE allergy_guests SET guest_name=$1, table_no=$2, allergens=$3, substitute_dish=$4, zone=$5, updated_at=now() WHERE id=$6`,
+    [
+      (b.guest_name ?? g.guest_name).trim(), newTable,
+      (b.allergens ?? g.allergens).trim(), (b.substitute_dish ?? g.substitute_dish).trim(),
+      newZone, id,
+    ],
+  );
+
+  if (moving) {
+    // 1) 未完成任务的桌号同步替换（过敏餐提示随宾客移动）
+    await q(
+      `UPDATE tasks SET title=REPLACE(title,$1,$2), detail=REPLACE(detail,$1,$2) WHERE allergy_id=$3 AND status<>'done'`,
+      [g.table_no, newTable, id],
+    );
+    // 2) 同步桌卡 / 厨房出餐 / 服务员分区
+    await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+      g.project_id, id, 'manager',
+      `桌卡更新：${g.guest_name} ${g.table_no}→${newTable}`,
+      `宾客 ${g.guest_name} 由 ${g.table_no} 桌换至 ${newTable} 桌：更新桌卡与席位引导，同步服务员${newZone ? ' ' + newZone + ' 区' : ''}分区提醒，过敏餐提示随宾客移动。`,
+    ]);
+    await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+      g.project_id, id, 'kitchen',
+      `出餐桌号变更：${g.guest_name} ${g.table_no}→${newTable}`,
+      `过敏宾客 ${g.guest_name} 换桌至 ${newTable}：无${g.allergens}餐（替代「${g.substitute_dish}」）出餐口按新桌号出餐，旧桌号作废。`,
+    ]);
+    await addAllergyEvent(g.project_id, id, 'moved',
+      `临场换桌：${g.guest_name} 由 ${g.table_no} 桌移至 ${newTable} 桌，过敏餐提示随宾客移动，已同步桌卡、厨房出餐与服务员分区`,
+      { from: g.table_no, to: newTable, by: req.user! });
+    await logAudit(g.project_id, req.user!, '过敏宾客换桌', `${g.guest_name} ${g.table_no}→${newTable}`);
+  } else {
+    await addAllergyEvent(g.project_id, id, 'created', `过敏餐信息更新：禁忌「${(b.allergens ?? g.allergens).trim()}」，替代菜品「${(b.substitute_dish ?? g.substitute_dish).trim()}」`, { by: req.user! });
+    await logAudit(g.project_id, req.user!, '更新过敏餐信息', `${g.guest_name}（${newTable}桌）`);
+  }
+  res.json({ ok: true, zone: newZone, moved: moving });
+}));
+
+// 上错菜事故：进入宴会经理处理与客户沟通记录
+router.post('/allergies/:id/wrong-dish', authRequired, ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法 ID' });
+  const g = (await q('SELECT * FROM allergy_guests WHERE id=$1', [id])).rows[0];
+  if (!g) return res.status(404).json({ error: '过敏宾客记录不存在' });
+  const detail = (req.body?.detail || '').trim() || `疑似向 ${g.guest_name}（${g.table_no}桌）上了含「${g.allergens}」的菜品`;
+  await q("UPDATE allergy_guests SET status='issue', updated_at=now() WHERE id=$1", [id]);
+  await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+    g.project_id, id, 'manager',
+    `过敏餐事故处理：${g.table_no}桌 ${g.guest_name}`,
+    `${detail}。请宴会经理立即核实、安排替换菜品，并与新人/宾客沟通登记处理结果。`,
+  ]);
+  await addAllergyEvent(g.project_id, id, 'wrong_dish', detail, { by: req.user! });
+  await logAudit(g.project_id, req.user!, '过敏餐事故上报', `${g.guest_name}（${g.table_no}桌）：${detail}`);
+  res.status(201).json({ ok: true });
+}));
+
+// 宴会经理登记客户沟通处理结果
+router.post('/allergies/:id/resolve', authRequired, requireRole('manager'), ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法 ID' });
+  const g = (await q('SELECT * FROM allergy_guests WHERE id=$1', [id])).rows[0];
+  if (!g) return res.status(404).json({ error: '过敏宾客记录不存在' });
+  const note = (req.body?.client_note || '').trim();
+  if (!note) return res.status(400).json({ error: '请填写客户沟通记录' });
+  // 沟通记录写入最近一条事故事件
+  await q(
+    `UPDATE allergy_events SET client_note=$1 WHERE id = (
+       SELECT id FROM allergy_events WHERE allergy_id=$2 AND kind='wrong_dish' ORDER BY id DESC LIMIT 1
+     )`,
+    [note, id],
+  );
+  await addAllergyEvent(g.project_id, id, 'resolved', `客户沟通处理完成：${note}`, { clientNote: note, by: req.user! });
+  await q("UPDATE allergy_guests SET status='confirmed', updated_at=now() WHERE id=$1", [id]);
+  await q("UPDATE tasks SET status='done', done_at=now() WHERE allergy_id=$1 AND role='manager' AND status<>'done' AND title LIKE '%事故%'", [id]);
+  await logAudit(g.project_id, req.user!, '过敏餐事故处理完成', `${g.guest_name}：${note}`);
   res.json({ ok: true });
 }));

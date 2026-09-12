@@ -46,6 +46,7 @@
     <IntakeTab v-if="tab === 'intake'" :d="d" @changed="load" />
     <LayoutTab v-if="tab === 'layout'" :d="d" @changed="load" />
     <PrepTab v-if="tab === 'prep'" :d="d" @changed="load" />
+    <AllergyTab v-if="tab === 'allergy'" :d="d" @changed="load" />
     <ChangesTab v-if="tab === 'changes'" ref="changesRef" :d="d" @changed="load" />
     <VersionsTab v-if="tab === 'versions'" :d="d" @changed="load" />
     <SettlementTab v-if="tab === 'settlement'" :d="d" @changed="load" />
@@ -58,6 +59,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { api, submit } from '../api';
+import AllergyTab from '../components/tabs/AllergyTab.vue';
 import ChangesTab from '../components/tabs/ChangesTab.vue';
 import ArchiveTab from '../components/tabs/ArchiveTab.vue';
 import IntakeTab from '../components/tabs/IntakeTab.vue';
@@ -87,11 +89,13 @@ const tabs = computed(() => {
   if (!d.value) return [];
   const openTasks = d.value.tasks.filter((t) => t.status !== 'done').length;
   const openChanges = d.value.changes.filter((c) => c.status === 'open').length;
+  const allergyOpen = (d.value.allergies || []).filter((a) => a.status !== 'confirmed').length;
   return [
     { key: 'overview', label: '概览' },
     { key: 'intake', label: '销售录入' },
     { key: 'layout', label: '厅内布置' },
     { key: 'prep', label: '婚前筹备', count: d.value.prep.filter((p) => p.status !== 'done').length || '' },
+    { key: 'allergy', label: '过敏餐', count: allergyOpen || '' },
     { key: 'changes', label: '临场变更', count: openChanges || '' },
     { key: 'versions', label: '确认版本', count: d.value.versions.length || '' },
     { key: 'settlement', label: '结算支付' },

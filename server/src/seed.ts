@@ -362,3 +362,43 @@ export async function projectSnapshot(projectId: number) {
     changes,
   };
 }
+
+// 过敏餐演示数据：独立幂等（已有数据卷也会补充，便于功能演示）
+export async function seedAllergyDemo(): Promise<void> {
+  const { rows } = await q('SELECT COUNT(*)::int n FROM allergy_guests');
+  if (rows[0].n > 0) return;
+  const live = await q("SELECT id FROM projects WHERE status='live' ORDER BY id LIMIT 1");
+  if (!live.rows.length) return;
+  const pid = live.rows[0].id;
+  const uid = async (u: string) => (await q('SELECT id FROM users WHERE username=$1', [u])).rows[0]?.id;
+  const [salesId, kitchenId] = [await uid('sales01'), await uid('kitchen01')];
+  const uname = async (id: number) => (await q('SELECT name FROM users WHERE id=$1', [id])).rows[0]?.name || '系统';
+  const { confirmAllergy, lookupZone, addAllergyEvent } = await import('./allergy');
+
+  const guests = [
+    { name: '王阿姨', table: 'T8', allergens: '海鲜（虾、蟹）', sub: '清蒸童子鸡（替代清蒸石斑鱼）', confirm: true },
+    { name: '张叔叔', table: 'T8', allergens: '海鲜（虾）', sub: '清蒸童子鸡', confirm: false },
+    { name: '李乐乐（儿童）', table: 'T5', allergens: '花生、坚果', sub: '无花生儿童餐', confirm: false },
+  ];
+  for (const g of guests) {
+    const zone = await lookupZone(pid, g.table);
+    const r = await q(
+      `INSERT INTO allergy_guests(project_id, guest_name, table_no, allergens, substitute_dish, zone, status, created_by, created_by_name)
+       VALUES($1,$2,$3,$4,$5,$6,'submitted',$7,$8) RETURNING id`,
+      [pid, g.name, g.table, g.allergens, g.sub, zone, salesId, await uname(salesId)],
+    );
+    const gid = r.rows[0].id;
+    await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+      pid, gid, 'kitchen',
+      `过敏餐备餐确认：${g.table}桌 ${g.name}`,
+      `宾客 ${g.name}（${g.table}桌${zone ? ' · ' + zone + '区' : ''}）禁忌「${g.allergens}」，替代菜品「${g.sub}」。请确认可单独备制并回执。`,
+    ]);
+    await addAllergyEvent(pid, gid, 'created',
+      `新人提交过敏宾客：${g.name}（${g.table}桌），禁忌「${g.allergens}」，替代菜品「${g.sub}」，已同步厨房与服务员线`,
+      { by: { id: salesId, name: await uname(salesId) } });
+    if (g.confirm) {
+      await confirmAllergy(gid, { id: kitchenId, name: await uname(kitchenId) });
+    }
+  }
+  console.log('[seed] 过敏餐演示数据：3 位过敏宾客（1 位厨房已确认）');
+}

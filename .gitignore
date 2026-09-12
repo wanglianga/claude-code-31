@@ -37,6 +37,8 @@ skills/
 **/skills/
 .claude/
 **/.claude/
+CLAUDE.md
+**/CLAUDE.md
 
 # Trajectories, browser state, and generated QA artifacts
 *_traces/

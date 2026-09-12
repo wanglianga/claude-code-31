@@ -47,11 +47,22 @@ export interface Settlement {
   changeDelta: number; additionsAmount: number; discount: number;
   total: number; paid: number; balance: number; lines: SettlementLine[];
 }
+export interface AllergyGuest {
+  id: number; project_id: number; guest_name: string; table_no: string;
+  allergens: string; substitute_dish: string; zone: string; status: string;
+  created_by_name?: string; created_at: string; updated_at?: string;
+}
+export interface AllergyEvent {
+  id: number; allergy_id: number; kind: string; detail: string;
+  from_table: string; to_table: string; client_note: string;
+  created_by_name: string; created_at: string;
+}
 export interface ProjectDetail {
   project: Project; hall: Hall; menu: Menu; layout: LayoutItem[];
   prep: PrepItem[]; payments: Payment[]; changes: Change[]; tasks: Task[];
   versions: VersionMeta[]; postEvent: any; audits: any[];
   sales: { id: number; name: string } | null; planner: { id: number; name: string } | null;
+  allergies: AllergyGuest[];
   settlement: Settlement;
 }
 export interface ChangeTypeDef {
