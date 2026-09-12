@@ -1,0 +1,22 @@
+{
+  "name": "wedding-banquet-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "城市婚礼宴会厅档期布置与临场变更系统 - 后端",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json && node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.10",
+    "@types/pg": "^8.11.10",
+    "typescript": "~5.6.3"
+  }
+}

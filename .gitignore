@@ -1,0 +1,47 @@
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*secret*
+*secrets*
+*token*
+*credential*
+*credentials*
+
+# Dependencies, builds, caches, logs, and local databases
+**/node_modules/
+**/dist/
+dist/
+build/
+target/
+coverage/
+.cache/
+.vite/
+*.log
+*.tmp
+*.temp
+*.sqlite
+*.sqlite3
+*.db
+
+# Local memory, skills, and assistant configuration
+memory/
+**/memory/
+skill/
+skills/
+**/skill/
+**/skills/
+.claude/
+**/.claude/
+
+# Trajectories, browser state, and generated QA artifacts
+*_traces/
+**/*_traces/
+.playwright-cli/
+output/
+qa/
+reports/
