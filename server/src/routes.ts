@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { AuthedRequest, authRequired, requireRole, signToken, verifyPassword } from './auth';
 import { logAudit, q } from './db';
 import { buildImpact } from './impacts';
@@ -8,18 +8,30 @@ import { CHANGE_TYPES, PREP_KINDS, PROJECT_STATUS, ROLE_LABELS, SOURCE_LABELS } 
 
 export const router = Router();
 
+// Express 4 不会自动捕获 async 处理器的异常，统一包装转发到错误中间件，避免进程崩溃
+const ah =
+  (fn: (req: any, res: Response, next: NextFunction) => Promise<any>) =>
+  (req: Request, res: Response, next: NextFunction) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
+
+// 路径参数 ID 校验：非法（NaN/非正整数）返回 null
+const numId = (v: string): number | null => {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
 // ---------- 健康检查 ----------
-router.get('/health', async (_req, res) => {
+router.get('/health', ah(async (_req, res) => {
   try {
     await q('SELECT 1');
     res.json({ ok: true, service: 'wedding-banquet', time: new Date().toISOString() });
   } catch (e: any) {
     res.status(503).json({ ok: false, error: e.message });
   }
-});
+}));
 
 // ---------- 登录 / 当前用户 ----------
-router.post('/auth/login', async (req, res) => {
+router.post('/auth/login', ah(async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: '请输入用户名和密码' });
   const { rows } = await q('SELECT * FROM users WHERE username=$1', [username]);
@@ -29,16 +41,16 @@ router.post('/auth/login', async (req, res) => {
   }
   const payload = { id: user.id, username: user.username, name: user.name, role: user.role };
   res.json({ token: signToken(payload), user: payload });
-});
+}));
 
 router.get('/me', authRequired, (req: AuthedRequest, res) => res.json({ user: req.user }));
 
 // ---------- 元数据（厅 / 菜单 / 用户 / 字典）----------
-router.get('/meta', authRequired, async (_req, res) => {
+router.get('/meta', authRequired, ah(async (_req, res) => {
   const [halls, menus, users] = await Promise.all([
     q('SELECT * FROM halls ORDER BY id'),
     q('SELECT * FROM menus ORDER BY price_per_table'),
-    q("SELECT id, name, role, username FROM users ORDER BY id"),
+    q('SELECT id, name, role, username FROM users ORDER BY id'),
   ]);
   res.json({
     halls: halls.rows,
@@ -50,10 +62,10 @@ router.get('/meta', authRequired, async (_req, res) => {
     statusLabels: PROJECT_STATUS,
     sourceLabels: SOURCE_LABELS,
   });
-});
+}));
 
 // ---------- 仪表盘 ----------
-router.get('/dashboard', authRequired, async (req: AuthedRequest, res) => {
+router.get('/dashboard', authRequired, ah(async (req: AuthedRequest, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 8) + '01';
   const [todayW, openC, myT, revenue, todayList, recentChanges, myTasks] = await Promise.all([
@@ -88,10 +100,10 @@ router.get('/dashboard', authRequired, async (req: AuthedRequest, res) => {
     recentChanges: recentChanges.rows,
     myTasks: myTasks.rows,
   });
-});
+}));
 
 // ---------- 档期 ----------
-router.get('/schedule', authRequired, async (req, res) => {
+router.get('/schedule', authRequired, ah(async (req, res) => {
   const from = String(req.query.from || new Date().toISOString().slice(0, 8) + '01');
   const to = String(req.query.to || new Date(new Date(from).setMonth(new Date(from).getMonth() + 1)).toISOString().slice(0, 10));
   const { rows } = await q(
@@ -102,10 +114,10 @@ router.get('/schedule', authRequired, async (req, res) => {
     [from, to],
   );
   res.json({ items: rows });
-});
+}));
 
 // ---------- 项目列表 ----------
-router.get('/projects', authRequired, async (req, res) => {
+router.get('/projects', authRequired, ah(async (req, res) => {
   const cond: string[] = [];
   const params: any[] = [];
   if (req.query.status) {
@@ -129,13 +141,16 @@ router.get('/projects', authRequired, async (req, res) => {
     params,
   );
   res.json({ items: rows });
-});
+}));
 
 // ---------- 新建项目（销售） ----------
-router.post('/projects', authRequired, requireRole('sales'), async (req: AuthedRequest, res) => {
+router.post('/projects', authRequired, requireRole('sales'), ah(async (req: AuthedRequest, res) => {
   const b = req.body || {};
   if (!b.couple_names || !b.wedding_date || !b.hall_id || !b.menu_id) {
     return res.status(400).json({ error: '新人姓名、婚期、厅别、菜单为必填项' });
+  }
+  if (Number.isNaN(Date.parse(String(b.wedding_date)))) {
+    return res.status(400).json({ error: '婚期格式不正确' });
   }
   const hall = (await q('SELECT * FROM halls WHERE id=$1', [b.hall_id])).rows[0];
   if (!hall) return res.status(400).json({ error: '宴会厅不存在' });
@@ -152,7 +167,7 @@ router.post('/projects', authRequired, requireRole('sales'), async (req: AuthedR
     return res.status(409).json({ error: `档期冲突：该厅当日${b.meal_session || '晚宴'}已被项目 ${clash.rows[0].code} 占用` });
   }
   const dateStr = String(b.wedding_date).replaceAll('-', '');
-  const seq = await q("SELECT COUNT(*)::int n FROM projects WHERE code LIKE $1", [`WD-${dateStr}-%`]);
+  const seq = await q('SELECT COUNT(*)::int n FROM projects WHERE code LIKE $1', [`WD-${dateStr}-%`]);
   const code = `WD-${dateStr}-${String(seq.rows[0].n + 1).padStart(2, '0')}`;
 
   const r = await q(
@@ -197,11 +212,12 @@ router.post('/projects', authRequired, requireRole('sales'), async (req: AuthedR
   );
   await logAudit(pid, req.user!, '创建宴会项目', `${b.couple_names} ${b.wedding_date} ${code}`);
   res.status(201).json({ id: pid, code });
-});
+}));
 
 // ---------- 项目详情 ----------
-router.get('/projects/:id', authRequired, async (req, res) => {
-  const pid = Number(req.params.id);
+router.get('/projects/:id', authRequired, ah(async (req, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const p = (await q('SELECT * FROM projects WHERE id=$1', [pid])).rows[0];
   if (!p) return res.status(404).json({ error: '项目不存在' });
   const [hall, menu, layout, prep, payments, changes, tasks, versions, postEvent, audits, sales, planner] = await Promise.all([
@@ -235,7 +251,7 @@ router.get('/projects/:id', authRequired, async (req, res) => {
     planner: planner.rows[0],
     settlement,
   });
-});
+}));
 
 // ---------- 更新项目（录入信息 / 状态推进） ----------
 const EDITABLE = [
@@ -243,8 +259,9 @@ const EDITABLE = [
   'planned_tables', 'reserve_tables', 'ceremony_req', 'lighting_audio', 'floral_req',
   'guest_flow', 'notes', 'planner_id',
 ];
-router.patch('/projects/:id', authRequired, async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.patch('/projects/:id', authRequired, ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const p = (await q('SELECT * FROM projects WHERE id=$1', [pid])).rows[0];
   if (!p) return res.status(404).json({ error: '项目不存在' });
   const b = req.body || {};
@@ -263,7 +280,7 @@ router.patch('/projects/:id', authRequired, async (req: AuthedRequest, res) => {
   const params: any[] = [];
   for (const key of EDITABLE) {
     if (b[key] !== undefined) {
-      // 录入信息仅销售/管理员可改（桌数等关键字段）
+      // 录入信息仅销售/经理/管理员可改
       if (!['sales', 'admin', 'manager'].includes(req.user!.role)) {
         return res.status(403).json({ error: '仅销售/宴会经理可修改项目信息' });
       }
@@ -277,11 +294,12 @@ router.patch('/projects/:id', authRequired, async (req: AuthedRequest, res) => {
     await logAudit(pid, req.user!, '更新项目信息', sets.map((s) => s.split('=')[0]).join('、'));
   }
   res.json({ ok: true });
-});
+}));
 
 // ---------- 布置图保存（策划/经理） ----------
-router.put('/projects/:id/layout', authRequired, requireRole('planner', 'manager'), async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.put('/projects/:id/layout', authRequired, requireRole('planner', 'manager'), ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   await q('DELETE FROM layout_items WHERE project_id=$1', [pid]);
   for (const it of items) {
@@ -293,11 +311,12 @@ router.put('/projects/:id/layout', authRequired, requireRole('planner', 'manager
   }
   await logAudit(pid, req.user!, '更新厅内布置图', `共 ${items.length} 个布置元素`);
   res.json({ ok: true });
-});
+}));
 
 // ---------- 婚前筹备事项 ----------
-router.patch('/prep/:id', authRequired, async (req: AuthedRequest, res) => {
-  const id = Number(req.params.id);
+router.patch('/prep/:id', authRequired, ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法事项 ID' });
   const item = (await q('SELECT * FROM prep_items WHERE id=$1', [id])).rows[0];
   if (!item) return res.status(404).json({ error: '事项不存在' });
   const { status, detail } = req.body || {};
@@ -306,11 +325,12 @@ router.patch('/prep/:id', authRequired, async (req: AuthedRequest, res) => {
   ]);
   await logAudit(item.project_id, req.user!, '更新筹备事项', `${item.title}${status === 'done' ? '（完成）' : ''}`);
   res.json({ ok: true });
-});
+}));
 
 // ---------- 发起临场变更 ----------
-router.post('/projects/:id/changes', authRequired, async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.post('/projects/:id/changes', authRequired, ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const p = (await q('SELECT p.*, h.name hall_name, m.name menu_name, m.price_per_table, m.dishes FROM projects p LEFT JOIN halls h ON h.id=p.hall_id LEFT JOIN menus m ON m.id=p.menu_id WHERE p.id=$1', [pid])).rows[0];
   if (!p) return res.status(404).json({ error: '项目不存在' });
   const { type, source, title, detail, payload } = req.body || {};
@@ -350,22 +370,23 @@ router.post('/projects/:id/changes', authRequired, async (req: AuthedRequest, re
   const created = (await q('SELECT * FROM changes WHERE id=$1', [changeId])).rows[0];
   const tasks = (await q('SELECT * FROM tasks WHERE change_id=$1 ORDER BY id', [changeId])).rows;
   res.status(201).json({ change: created, tasks, impact });
-});
+}));
 
 // ---------- 变更状态 ----------
-router.patch('/changes/:id', authRequired, async (req: AuthedRequest, res) => {
-  const id = Number(req.params.id);
+router.patch('/changes/:id', authRequired, ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法变更 ID' });
   const c = (await q('SELECT * FROM changes WHERE id=$1', [id])).rows[0];
   if (!c) return res.status(404).json({ error: '变更不存在' });
   const { status } = req.body || {};
   if (!['open', 'resolved', 'void'].includes(status)) return res.status(400).json({ error: '非法状态' });
-  await q('UPDATE changes SET status=$1, resolved_at = CASE WHEN $1=\'resolved\' THEN now() ELSE resolved_at END WHERE id=$2', [status, id]);
+  await q("UPDATE changes SET status=$1, resolved_at = CASE WHEN $1='resolved' THEN now() ELSE resolved_at END WHERE id=$2", [status, id]);
   await logAudit(c.project_id, req.user!, '变更状态更新', `${c.title} → ${status === 'resolved' ? '已解决' : status === 'void' ? '作废' : '处理中'}`);
   res.json({ ok: true });
-});
+}));
 
 // ---------- 任务 ----------
-router.get('/tasks', authRequired, async (req: AuthedRequest, res) => {
+router.get('/tasks', authRequired, ah(async (req, res) => {
   const cond: string[] = [];
   const params: any[] = [];
   if (req.query.role) {
@@ -388,10 +409,11 @@ router.get('/tasks', authRequired, async (req: AuthedRequest, res) => {
     params,
   );
   res.json({ items: rows });
-});
+}));
 
-router.patch('/tasks/:id', authRequired, async (req: AuthedRequest, res) => {
-  const id = Number(req.params.id);
+router.patch('/tasks/:id', authRequired, ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法任务 ID' });
   const t = (await q('SELECT * FROM tasks WHERE id=$1', [id])).rows[0];
   if (!t) return res.status(404).json({ error: '任务不存在' });
   const role = req.user!.role;
@@ -418,11 +440,12 @@ router.patch('/tasks/:id', authRequired, async (req: AuthedRequest, res) => {
     }
   }
   res.json({ ok: true });
-});
+}));
 
 // ---------- 客户确认版本 ----------
-router.post('/projects/:id/versions', authRequired, requireRole('sales', 'planner', 'manager'), async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.post('/projects/:id/versions', authRequired, requireRole('sales', 'planner', 'manager'), ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const { source, label, confirmed_by, note } = req.body || {};
   if (!SOURCE_LABELS[source]) return res.status(400).json({ error: '请选择版本来源：原计划/彩排调整/现场临时' });
   const maxV = await q('SELECT COALESCE(MAX(version_no),0)::int v FROM versions WHERE project_id=$1', [pid]);
@@ -433,17 +456,20 @@ router.post('/projects/:id/versions', authRequired, requireRole('sales', 'planne
   );
   await logAudit(pid, req.user!, '生成客户确认版本', `V${r.rows[0].version_no}（${SOURCE_LABELS[source]}）${confirmed_by ? ' 确认人：' + confirmed_by : ''}`);
   res.status(201).json(r.rows[0]);
-});
+}));
 
-router.get('/versions/:id', authRequired, async (req, res) => {
-  const v = (await q('SELECT * FROM versions WHERE id=$1', [Number(req.params.id)])).rows[0];
+router.get('/versions/:id', authRequired, ah(async (req, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法版本 ID' });
+  const v = (await q('SELECT * FROM versions WHERE id=$1', [id])).rows[0];
   if (!v) return res.status(404).json({ error: '版本不存在' });
   res.json(v);
-});
+}));
 
 // ---------- 付款节点 ----------
-router.post('/projects/:id/payments', authRequired, requireRole('sales', 'cashier'), async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.post('/projects/:id/payments', authRequired, requireRole('sales', 'cashier'), ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const { kind, label, amount, due_date } = req.body || {};
   if (!label || !(Number(amount) > 0)) return res.status(400).json({ error: '请填写节点名称与金额' });
   const r = await q('INSERT INTO payments(project_id, kind, label, amount, due_date) VALUES($1,$2,$3,$4,$5) RETURNING id', [
@@ -451,10 +477,11 @@ router.post('/projects/:id/payments', authRequired, requireRole('sales', 'cashie
   ]);
   await logAudit(pid, req.user!, '新增付款节点', `${label} ¥${Number(amount).toLocaleString('zh-CN')}`);
   res.status(201).json({ id: r.rows[0].id });
-});
+}));
 
-router.post('/payments/:id/collect', authRequired, requireRole('cashier'), async (req: AuthedRequest, res) => {
-  const id = Number(req.params.id);
+router.post('/payments/:id/collect', authRequired, requireRole('cashier'), ah(async (req: AuthedRequest, res) => {
+  const id = numId(req.params.id);
+  if (!id) return res.status(400).json({ error: '非法付款节点 ID' });
   const p = (await q('SELECT * FROM payments WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ error: '付款节点不存在' });
   if (p.status === 'paid') return res.status(400).json({ error: '该节点已收款' });
@@ -468,11 +495,12 @@ router.post('/payments/:id/collect', authRequired, requireRole('cashier'), async
     ]);
   }
   res.json({ ok: true });
-});
+}));
 
 // ---------- 婚后归档 ----------
-router.post('/projects/:id/archive', authRequired, requireRole('manager'), async (req: AuthedRequest, res) => {
-  const pid = Number(req.params.id);
+router.post('/projects/:id/archive', authRequired, requireRole('manager'), ah(async (req: AuthedRequest, res) => {
+  const pid = numId(req.params.id);
+  if (!pid) return res.status(400).json({ error: '非法项目 ID' });
   const p = (await q('SELECT * FROM projects WHERE id=$1', [pid])).rows[0];
   if (!p) return res.status(404).json({ error: '项目不存在' });
   const b = req.body || {};
@@ -499,4 +527,4 @@ router.post('/projects/:id/archive', authRequired, requireRole('manager'), async
   await q("UPDATE projects SET status='archived', updated_at=now() WHERE id=$1", [pid]);
   await logAudit(pid, req.user!, '项目归档', `实际 ${b.actual_tables ?? p.planned_tables} 桌，优惠 ¥${Number(b.discount) || 0}，投诉 ${complaints.length} 条`);
   res.json({ ok: true });
-});
+}));

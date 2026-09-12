@@ -2,8 +2,8 @@
   <svg
     ref="svgRef"
     class="floor-svg"
-    :viewBox="`0 0 ${hall.length_m} ${hall.width_m}`"
-    :style="{ aspectRatio: `${hall.length_m} / ${hall.width_m}` }"
+    :viewBox="`0 0 ${hallL} ${hallW}`"
+    :style="{ aspectRatio: `${hallL} / ${hallW}` }"
     @pointermove="onMove"
     @pointerup="onUp"
     @pointerleave="onUp"
@@ -13,7 +13,7 @@
         <path d="M 1 0 L 0 0 0 1" fill="none" stroke="#f0e6df" stroke-width="0.04" />
       </pattern>
     </defs>
-    <rect :width="hall.length_m" :height="hall.width_m" fill="url(#fgrid)" stroke="#d7ccc8" stroke-width="0.1" rx="0.2" />
+    <rect :width="hallL" :height="hallW" fill="url(#fgrid)" stroke="#d7ccc8" stroke-width="0.1" rx="0.2" />
 
     <g
       v-for="(it, i) in items"
@@ -59,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { Hall, LayoutItem } from '../types';
 
 const props = defineProps<{ hall: Hall; items: LayoutItem[]; editable: boolean; selected: number }>();
@@ -68,6 +68,31 @@ const emit = defineEmits(['select', 'changed']);
 const svgRef = ref<SVGSVGElement | null>(null);
 const dragIdx = ref(-1);
 const dragOff = { x: 0, y: 0 };
+
+// 数据库 NUMERIC 列经 API 返回为字符串（如 "7.2"），渲染与拖拽计算前统一转为 number，
+// 否则 "7.2" + 0.45 会拼成 "7.20.45" 之类的非法 SVG 属性，导致控制台报错、区号/席位文本丢失
+const num = (v: any) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+function coerceItem(it: LayoutItem) {
+  it.x = num(it.x);
+  it.y = num(it.y);
+  it.w = num(it.w);
+  it.h = num(it.h);
+  it.seats = num(it.seats);
+}
+
+watch(
+  () => props.items,
+  (list) => (list || []).forEach(coerceItem),
+  { immediate: true },
+);
+
+// 厅尺寸同样可能为字符串，统一数值化后再参与 viewBox / 比例 / 拖拽换算
+const hallL = computed(() => num(props.hall?.length_m) || 1);
+const hallW = computed(() => num(props.hall?.width_m) || 1);
 
 const RECT_KINDS = ['stage', 'welcome', 'entrance', 'fire_exit'];
 const isRect = (kind: string) => RECT_KINDS.includes(kind);
@@ -113,8 +138,8 @@ function radiusOf(it: LayoutItem) {
 function pointerPos(e: PointerEvent) {
   const rect = svgRef.value!.getBoundingClientRect();
   return {
-    x: ((e.clientX - rect.left) / rect.width) * Number(props.hall.length_m),
-    y: ((e.clientY - rect.top) / rect.height) * Number(props.hall.width_m),
+    x: ((e.clientX - rect.left) / rect.width) * hallL.value,
+    y: ((e.clientY - rect.top) / rect.height) * hallW.value,
   };
 }
 
@@ -122,15 +147,11 @@ function onDown(i: number, e: PointerEvent) {
   emit('select', i);
   if (!props.editable) return;
   const it = props.items[i];
+  coerceItem(it); // 拖拽计算前确保数值类型
   const p = pointerPos(e);
   dragIdx.value = i;
-  if (isRect(it.kind)) {
-    dragOff.x = p.x - it.x;
-    dragOff.y = p.y - it.y;
-  } else {
-    dragOff.x = p.x - it.x;
-    dragOff.y = p.y - it.y;
-  }
+  dragOff.x = p.x - it.x;
+  dragOff.y = p.y - it.y;
   (e.target as Element).setPointerCapture?.(e.pointerId);
 }
 
@@ -138,8 +159,8 @@ function onMove(e: PointerEvent) {
   if (dragIdx.value < 0 || !props.editable) return;
   const it = props.items[dragIdx.value];
   const p = pointerPos(e);
-  const L = Number(props.hall.length_m);
-  const W = Number(props.hall.width_m);
+  const L = hallL.value;
+  const W = hallW.value;
   if (isRect(it.kind)) {
     it.x = clamp(p.x - dragOff.x, 0, L - (it.w || 2));
     it.y = clamp(p.y - dragOff.y, 0, W - (it.h || 1.2));
