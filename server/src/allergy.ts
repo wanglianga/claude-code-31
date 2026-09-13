@@ -28,8 +28,10 @@ export async function lookupZone(projectId: number, tableNo: string): Promise<st
 
 // ---- 任务文案模板（唯一来源，保证任何时刻生成的提醒都使用当前桌号与当前分区）----
 const zoneSeg = (g: { zone?: string }) => (g.zone ? ` · ${g.zone}区` : '');
+const zoneTitle = (g: { zone?: string }) => (g.zone ? `（${g.zone}区）` : '');
 
-export const reminderTitle = (g: any) => `桌边提醒：${g.table_no}桌 ${g.guest_name} 过敏餐`;
+// 标题同时包含当前桌号与当前分区：仪表盘/任务中心仅展示标题时服务员也能识别分区
+export const reminderTitle = (g: any) => `桌边提醒：${g.table_no}桌${zoneTitle(g)} ${g.guest_name} 过敏餐`;
 export const reminderDetail = (g: any) =>
   `上桌时核对：${g.guest_name}（${g.table_no}桌${zoneSeg(g)}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」，单独出餐、桌边确认后再离开。`;
 

@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { migrate, waitForDb } from './db';
 import { router } from './routes';
-import { seedAllergyDemo, seedIfEmpty, seedWaiterUsers } from './seed';
+import { migrateReminderTitles, seedAllergyDemo, seedIfEmpty, seedWaiterUsers } from './seed';
 
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
@@ -36,6 +36,7 @@ async function boot() {
     await seedIfEmpty();
     await seedWaiterUsers();
     await seedAllergyDemo();
+    await migrateReminderTitles();
   }
   app.listen(PORT, () => {
     console.log(`[server] 婚礼宴会厅管理系统已启动: http://0.0.0.0:${PORT}`);

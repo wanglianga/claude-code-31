@@ -425,3 +425,20 @@ export async function seedWaiterUsers(): Promise<void> {
     console.log(`[seed] 服务员账号补齐 ${added} 个，桌边提醒改投服务员 ${re.rowCount} 条`);
   }
 }
+
+// 存量桌边提醒标题迁移：按宾客当前桌号/分区重写标题（幂等）
+export async function migrateReminderTitles(): Promise<void> {
+  const { reminderTitle } = await import('./allergy');
+  const { rows } = await q(
+    `SELECT t.id, g.guest_name, g.table_no, g.zone
+     FROM tasks t JOIN allergy_guests g ON g.id = t.allergy_id
+     WHERE t.status<>'done' AND t.title LIKE '桌边提醒%'`,
+  );
+  let n = 0;
+  for (const r of rows) {
+    const title = reminderTitle(r);
+    const u = await q('UPDATE tasks SET title=$1 WHERE id=$2 AND title<>$1', [title, r.id]);
+    n += u.rowCount || 0;
+  }
+  if (n) console.log(`[seed] 桌边提醒标题补齐当前分区 ${n} 条`);
+}
