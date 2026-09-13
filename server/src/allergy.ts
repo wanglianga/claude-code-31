@@ -1,4 +1,4 @@
-// 过敏餐跟踪领域逻辑：桌号→分区查找、事件记录、厨房确认→服务员桌边提醒
+// 过敏餐跟踪领域逻辑：桌号→分区查找、事件记录、厨房确认→服务员桌边提醒、换桌任务同步
 import { q } from './db';
 
 export const ALLERGY_STATUS: Record<string, string> = {
@@ -25,6 +25,17 @@ export async function lookupZone(projectId: number, tableNo: string): Promise<st
   );
   return r.rows[0]?.zone || '';
 }
+
+// ---- 任务文案模板（唯一来源，保证任何时刻生成的提醒都使用当前桌号与当前分区）----
+const zoneSeg = (g: { zone?: string }) => (g.zone ? ` · ${g.zone}区` : '');
+
+export const reminderTitle = (g: any) => `桌边提醒：${g.table_no}桌 ${g.guest_name} 过敏餐`;
+export const reminderDetail = (g: any) =>
+  `上桌时核对：${g.guest_name}（${g.table_no}桌${zoneSeg(g)}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」，单独出餐、桌边确认后再离开。`;
+
+export const kitchenPrepTitle = (g: any) => `过敏餐备餐确认：${g.table_no}桌 ${g.guest_name}`;
+export const kitchenPrepDetail = (g: any) =>
+  `宾客 ${g.guest_name}（${g.table_no}桌${zoneSeg(g)}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」。请确认可单独备制并回执。`;
 
 export async function addAllergyEvent(
   projectId: number,
@@ -55,11 +66,29 @@ export async function confirmAllergy(guestId: number, user: { id: number; name: 
     `厨房已确认 ${g.guest_name}（${g.table_no}桌）的无${g.allergens}餐，替代菜品「${g.substitute_dish}」开始备制`, { by: user });
   // 生成服务员桌边提醒（服务员角色任务，服务员登录可见）
   await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
-    g.project_id, guestId, 'waiter',
-    `桌边提醒：${g.table_no}桌 ${g.guest_name} 过敏餐`,
-    `上桌时核对：${g.guest_name}（${g.table_no}桌${g.zone ? ' · ' + g.zone + '区' : ''}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」，单独出餐、桌边确认后再离开。`,
+    g.project_id, guestId, 'waiter', reminderTitle(g), reminderDetail(g),
   ]);
   await addAllergyEvent(g.project_id, guestId, 'reminder',
     `已生成服务员桌边提醒（${g.table_no}桌${g.zone ? ' · ' + g.zone + '区' : ''}）`, { by: user });
   return g;
+}
+
+// 临场换桌后同步该宾客的全部待办：
+// 1) 常驻提醒（服务员桌边提醒、厨房备餐确认）按当前桌号+当前分区整体重写
+// 2) 既往换桌/桌卡/出餐类待办由本次新任务取代（置为完成），杜绝旧桌号/旧分区残留
+export async function syncAllergyTasks(g: any) {
+  await q(
+    `UPDATE tasks SET title=$1, detail=$2 WHERE allergy_id=$3 AND role='waiter' AND status<>'done' AND title LIKE '桌边提醒%'`,
+    [reminderTitle(g), reminderDetail(g), g.id],
+  );
+  await q(
+    `UPDATE tasks SET title=$1, detail=$2 WHERE allergy_id=$3 AND role='kitchen' AND status<>'done' AND title LIKE '过敏餐备餐确认%'`,
+    [kitchenPrepTitle(g), kitchenPrepDetail(g), g.id],
+  );
+  await q(
+    `UPDATE tasks SET status='done', done_at=now()
+     WHERE allergy_id=$1 AND status<>'done'
+       AND (title LIKE '换桌提醒%' OR title LIKE '桌卡更新%' OR title LIKE '出餐桌号变更%')`,
+    [g.id],
+  );
 }

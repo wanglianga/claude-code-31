@@ -28,12 +28,12 @@ coverage/
 *.db
 
 # Local memory, skills, and assistant configuration
-memory/
-**/memory/
-skill/
-skills/
-**/skill/
-**/skills/
+memory
+memory.*
+skill
+skill.*
+skills
+skills.*
 .claude/
 **/.claude/
 CLAUDE.md
@@ -42,6 +42,16 @@ CLAUDE.md
 # Trajectories, browser state, and generated QA artifacts
 *_traces/
 **/*_traces/
+*.jsonl
+*.trace
+trace
+trace.*
+traces
+traces.*
+session
+session.*
+sessions
+sessions.*
 .playwright-cli/
 output/
 qa/

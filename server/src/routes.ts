@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response, Router } from 'express';
-import { addAllergyEvent, confirmAllergy, lookupZone } from './allergy';
+import { addAllergyEvent, confirmAllergy, kitchenPrepDetail, kitchenPrepTitle, lookupZone, syncAllergyTasks } from './allergy';
 import { AuthedRequest, authRequired, requireRole, signToken, verifyPassword } from './auth';
 import { logAudit, q } from './db';
 import { buildImpact } from './impacts';
@@ -564,10 +564,9 @@ router.post('/projects/:id/allergies', authRequired, requireRole('sales', 'plann
   );
   const gid = r.rows[0].id;
   // 同步厨房：备餐确认任务（姓名/桌号/禁忌/替代菜品）
+  const guestRow = { guest_name: guest_name.trim(), table_no: table_no.trim(), allergens: allergens.trim(), substitute_dish: (substitute_dish || '').trim(), zone };
   await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
-    pid, gid, 'kitchen',
-    `过敏餐备餐确认：${table_no.trim()}桌 ${guest_name.trim()}`,
-    `宾客 ${guest_name.trim()}（${table_no.trim()}桌${zone ? ' · ' + zone + '区' : ''}）禁忌「${allergens.trim()}」，替代菜品「${(substitute_dish || '').trim() || '待定'}」。请确认可单独备制并回执。`,
+    pid, gid, 'kitchen', kitchenPrepTitle(guestRow), kitchenPrepDetail(guestRow),
   ]);
   await addAllergyEvent(pid, gid, 'created',
     `新人提交过敏宾客：${guest_name.trim()}（${table_no.trim()}桌），禁忌「${allergens.trim()}」，替代菜品「${(substitute_dish || '').trim() || '待定'}」，已同步厨房与服务员线`, { by: req.user! });
@@ -606,12 +605,9 @@ router.patch('/allergies/:id', authRequired, requireRole('sales', 'planner', 'ma
   );
 
   if (moving) {
-    // 1) 未完成任务的桌号同步替换（过敏餐提示随宾客移动）
-    await q(
-      `UPDATE tasks SET title=REPLACE(title,$1,$2), detail=REPLACE(detail,$1,$2) WHERE allergy_id=$3 AND status<>'done'`,
-      [g.table_no, newTable, id],
-    );
-    // 2) 同步桌卡 / 厨房出餐 / 服务员分区
+    // 1) 常驻提醒整体重写为当前桌号+当前分区；既往换桌/桌卡/出餐待办由本次新任务取代
+    await syncAllergyTasks({ ...g, table_no: newTable, zone: newZone });
+    // 2) 同步桌卡（经理）与厨房出餐（含旧桌号作废指引）
     await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
       g.project_id, id, 'manager',
       `桌卡更新：${g.guest_name} ${g.table_no}→${newTable}`,
@@ -622,11 +618,11 @@ router.patch('/allergies/:id', authRequired, requireRole('sales', 'planner', 'ma
       `出餐桌号变更：${g.guest_name} ${g.table_no}→${newTable}`,
       `过敏宾客 ${g.guest_name} 换桌至 ${newTable}：无${g.allergens}餐（替代「${g.substitute_dish}」）出餐口按新桌号出餐，旧桌号作废。`,
     ]);
-    // 服务员同步收到更新后的桌边提醒（新桌号 + 新分区）
+    // 3) 服务员收到换桌提醒（只含当前桌号与当前分区，移动轨迹见事件记录）
     await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
       g.project_id, id, 'waiter',
-      `换桌提醒：${g.guest_name} ${g.table_no}→${newTable}${newZone ? '（' + newZone + '区）' : ''}`,
-      `过敏宾客 ${g.guest_name} 已由 ${g.table_no} 桌换至 ${newTable} 桌${newZone ? '（' + newZone + '区）' : ''}：禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」。请按新桌号桌边核对，过敏餐提示随宾客移动。`,
+      `换桌提醒：${g.guest_name} 已换至 ${newTable} 桌${newZone ? '（' + newZone + '区）' : ''}`,
+      `过敏宾客 ${g.guest_name} 现位于 ${newTable} 桌${newZone ? '（' + newZone + '区）' : ''}：禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」。请按当前桌号与分区桌边核对，过敏餐提示随宾客移动。`,
     ]);
     await addAllergyEvent(g.project_id, id, 'moved',
       `临场换桌：${g.guest_name} 由 ${g.table_no} 桌移至 ${newTable} 桌，过敏餐提示随宾客移动，已同步桌卡、厨房出餐与服务员分区`,

@@ -375,7 +375,7 @@ export async function seedAllergyDemo(): Promise<void> {
   const uid = async (u: string) => (await q('SELECT id FROM users WHERE username=$1', [u])).rows[0]?.id;
   const [salesId, kitchenId] = [await uid('sales01'), await uid('kitchen01')];
   const uname = async (id: number) => (await q('SELECT name FROM users WHERE id=$1', [id])).rows[0]?.name || '系统';
-  const { confirmAllergy, lookupZone, addAllergyEvent } = await import('./allergy');
+  const { confirmAllergy, lookupZone, addAllergyEvent, kitchenPrepTitle, kitchenPrepDetail } = await import('./allergy');
 
   const guests = [
     { name: '王阿姨', table: 'T8', allergens: '海鲜（虾、蟹）', sub: '清蒸童子鸡（替代清蒸石斑鱼）', confirm: true },
@@ -390,10 +390,9 @@ export async function seedAllergyDemo(): Promise<void> {
       [pid, g.name, g.table, g.allergens, g.sub, zone, salesId, await uname(salesId)],
     );
     const gid = r.rows[0].id;
+    const guestRow = { guest_name: g.name, table_no: g.table, allergens: g.allergens, substitute_dish: g.sub, zone };
     await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
-      pid, gid, 'kitchen',
-      `过敏餐备餐确认：${g.table}桌 ${g.name}`,
-      `宾客 ${g.name}（${g.table}桌${zone ? ' · ' + zone + '区' : ''}）禁忌「${g.allergens}」，替代菜品「${g.sub}」。请确认可单独备制并回执。`,
+      pid, gid, 'kitchen', kitchenPrepTitle(guestRow), kitchenPrepDetail(guestRow),
     ]);
     await addAllergyEvent(pid, gid, 'created',
       `新人提交过敏宾客：${g.name}（${g.table}桌），禁忌「${g.allergens}」，替代菜品「${g.sub}」，已同步厨房与服务员线`,
