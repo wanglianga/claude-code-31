@@ -48,6 +48,7 @@ const demoAccounts = [
   { u: 'planner01', label: '策划·李婉' },
   { u: 'manager01', label: '宴会经理·张强' },
   { u: 'kitchen01', label: '厨房·陈国栋' },
+  { u: 'waiter01', label: '服务员·刘倩' },
   { u: 'cashier01', label: '收银·赵燕' },
   { u: 'admin', label: '管理员' },
 ];

@@ -44,7 +44,7 @@ export async function addAllergyEvent(
   );
 }
 
-// 厨房确认 → 完成厨房任务 → 生成服务员桌边提醒（宴会经理线任务）
+// 厨房确认 → 完成厨房任务 → 生成服务员桌边提醒（服务员角色任务）
 export async function confirmAllergy(guestId: number, user: { id: number; name: string }) {
   const g = (await q('SELECT * FROM allergy_guests WHERE id=$1', [guestId])).rows[0];
   if (!g || g.status !== 'submitted') return null;
@@ -53,11 +53,11 @@ export async function confirmAllergy(guestId: number, user: { id: number; name: 
   await q("UPDATE tasks SET status='done', done_at=now() WHERE allergy_id=$1 AND role='kitchen' AND status<>'done'", [guestId]);
   await addAllergyEvent(g.project_id, guestId, 'kitchen_confirmed',
     `厨房已确认 ${g.guest_name}（${g.table_no}桌）的无${g.allergens}餐，替代菜品「${g.substitute_dish}」开始备制`, { by: user });
-  // 生成服务员桌边提醒
+  // 生成服务员桌边提醒（服务员角色任务，服务员登录可见）
   await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
-    g.project_id, guestId, 'manager',
+    g.project_id, guestId, 'waiter',
     `桌边提醒：${g.table_no}桌 ${g.guest_name} 过敏餐`,
-    `服务员上桌时核对：${g.guest_name}（${g.table_no}桌${g.zone ? ' · ' + g.zone + '区' : ''}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」，单独出餐、桌边确认后再离开。`,
+    `上桌时核对：${g.guest_name}（${g.table_no}桌${g.zone ? ' · ' + g.zone + '区' : ''}）禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」，单独出餐、桌边确认后再离开。`,
   ]);
   await addAllergyEvent(g.project_id, guestId, 'reminder',
     `已生成服务员桌边提醒（${g.table_no}桌${g.zone ? ' · ' + g.zone + '区' : ''}）`, { by: user });

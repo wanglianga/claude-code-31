@@ -12,7 +12,7 @@ export const useAuthStore = defineStore('auth', {
     roleLabel(): string {
       const map: Record<string, string> = {
         admin: '管理员', sales: '销售', planner: '策划师',
-        manager: '宴会经理', kitchen: '厨房', cashier: '收银',
+        manager: '宴会经理', kitchen: '厨房', cashier: '收银', waiter: '服务员',
       };
       return this.user ? map[this.user.role] || this.user.role : '';
     },

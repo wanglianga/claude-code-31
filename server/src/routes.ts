@@ -622,6 +622,12 @@ router.patch('/allergies/:id', authRequired, requireRole('sales', 'planner', 'ma
       `出餐桌号变更：${g.guest_name} ${g.table_no}→${newTable}`,
       `过敏宾客 ${g.guest_name} 换桌至 ${newTable}：无${g.allergens}餐（替代「${g.substitute_dish}」）出餐口按新桌号出餐，旧桌号作废。`,
     ]);
+    // 服务员同步收到更新后的桌边提醒（新桌号 + 新分区）
+    await q('INSERT INTO tasks(project_id, allergy_id, role, title, detail) VALUES($1,$2,$3,$4,$5)', [
+      g.project_id, id, 'waiter',
+      `换桌提醒：${g.guest_name} ${g.table_no}→${newTable}${newZone ? '（' + newZone + '区）' : ''}`,
+      `过敏宾客 ${g.guest_name} 已由 ${g.table_no} 桌换至 ${newTable} 桌${newZone ? '（' + newZone + '区）' : ''}：禁忌「${g.allergens}」，替代菜品「${g.substitute_dish}」。请按新桌号桌边核对，过敏餐提示随宾客移动。`,
+    ]);
     await addAllergyEvent(g.project_id, id, 'moved',
       `临场换桌：${g.guest_name} 由 ${g.table_no} 桌移至 ${newTable} 桌，过敏餐提示随宾客移动，已同步桌卡、厨房出餐与服务员分区`,
       { from: g.table_no, to: newTable, by: req.user! });

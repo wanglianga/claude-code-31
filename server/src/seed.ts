@@ -25,6 +25,8 @@ export async function seedIfEmpty(): Promise<void> {
     ['manager01', '张强', 'manager'],
     ['kitchen01', '陈国栋', 'kitchen'],
     ['cashier01', '赵燕', 'cashier'],
+    ['waiter01', '刘倩', 'waiter'],
+    ['waiter02', '周洁', 'waiter'],
   ];
   const uid: Record<string, number> = {};
   for (const [username, name, role] of users) {
@@ -401,4 +403,26 @@ export async function seedAllergyDemo(): Promise<void> {
     }
   }
   console.log('[seed] 过敏餐演示数据：3 位过敏宾客（1 位厨房已确认）');
+}
+
+// 服务员角色迁移：为已有数据卷补服务员账号，并把旧的「桌边提醒」任务从宴会经理改投服务员
+export async function seedWaiterUsers(): Promise<void> {
+  const pwd = hashPassword('123456');
+  const waiters: [string, string][] = [
+    ['waiter01', '刘倩'],
+    ['waiter02', '周洁'],
+  ];
+  let added = 0;
+  for (const [username, name] of waiters) {
+    const r = await q(
+      "INSERT INTO users(username, password_hash, name, role) VALUES($1,$2,$3,'waiter') ON CONFLICT (username) DO NOTHING RETURNING id",
+      [username, pwd, name],
+    );
+    added += r.rowCount || 0;
+  }
+  // 旧的桌边提醒任务改投服务员角色
+  const re = await q("UPDATE tasks SET role='waiter' WHERE role='manager' AND title LIKE '桌边提醒%'");
+  if (added || (re.rowCount || 0) > 0) {
+    console.log(`[seed] 服务员账号补齐 ${added} 个，桌边提醒改投服务员 ${re.rowCount} 条`);
+  }
 }

@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'path';
 import { migrate, waitForDb } from './db';
 import { router } from './routes';
-import { seedAllergyDemo, seedIfEmpty } from './seed';
+import { seedAllergyDemo, seedIfEmpty, seedWaiterUsers } from './seed';
 
 const PORT = Number(process.env.PORT || 3000);
 const app = express();
@@ -34,6 +34,7 @@ async function boot() {
   await migrate();
   if ((process.env.SEED_DEMO || 'true') !== 'false') {
     await seedIfEmpty();
+    await seedWaiterUsers();
     await seedAllergyDemo();
   }
   app.listen(PORT, () => {

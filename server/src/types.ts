@@ -1,6 +1,6 @@
 // 共享类型与常量（后端）
 
-export type Role = 'admin' | 'sales' | 'planner' | 'manager' | 'kitchen' | 'cashier';
+export type Role = 'admin' | 'sales' | 'planner' | 'manager' | 'kitchen' | 'cashier' | 'waiter';
 
 export const ROLE_LABELS: Record<string, string> = {
   admin: '管理员',
@@ -9,6 +9,7 @@ export const ROLE_LABELS: Record<string, string> = {
   manager: '宴会经理',
   kitchen: '厨房',
   cashier: '收银',
+  waiter: '服务员',
 };
 
 export const PROJECT_STATUS: Record<string, string> = {
