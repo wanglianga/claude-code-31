@@ -1,7 +1,6 @@
 # Environment files and credentials
 .env
 .env.*
-!.env.example
 *.pem
 *.key
 *.p12
